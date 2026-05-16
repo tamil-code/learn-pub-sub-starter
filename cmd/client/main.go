@@ -13,6 +13,26 @@ import (
 
 const RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
 
+var gameState *gamelogic.GameState
+
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
+	return func(ps routing.PlayingState) {
+		if gs == nil {
+			return
+		}
+		gs.HandlePause(ps)
+	}
+}
+
+func handlerArmyMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
+	return func(am gamelogic.ArmyMove) {
+		if gs == nil {
+			return
+		}
+		gs.HandleMove(am)
+	}
+}
+
 func main() {
 	fmt.Println("Starting Peril client...")
 	conn, err := amqp.Dial(RABBITMQ_URL)
@@ -30,10 +50,16 @@ func main() {
 		fmt.Println("Failed to welcome client:", err)
 		return
 	}
-	ch, queue, err := pubsub.DeclareAndBind(conn, routing.ExchangePerilDirect, username, routing.PauseKey, pubsub.SimpleQueueTypeTransient)
+	gameState = gamelogic.NewGameState(username)
+	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilDirect, username, routing.PauseKey, pubsub.SimpleQueueTypeTransient, handlerPause(gameState))
 
 	if err != nil {
-		fmt.Println("Failed to declare and bind queue:", err)
+		fmt.Println("Failed to subscribe to queue:", err)
+		return
+	}
+	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, routing.ArmyMovesPrefix+"_"+username, routing.ArmyMovesKey, pubsub.SimpleQueueTypeTransient, handlerArmyMove(gameState))
+	if err != nil {
+		fmt.Println("Failed to subscribe to queue:", err)
 		return
 	}
 	for {
@@ -44,12 +70,23 @@ func main() {
 			return
 		}
 		command := words[0]
-		gameState := gamelogic.NewGameState(username)
 
 		if command == "spawn" {
-			gameState.CommandSpawn(words[1:])
+			err := gameState.CommandSpawn(words[0:])
+			if err != nil {
+				fmt.Println("Failed to spawn unit:", err)
+				continue
+			}
 		} else if command == "move" {
-			gameState.CommandMove(words[1:])
+			move, err := gameState.CommandMove(words[0:])
+			if err != nil {
+				fmt.Println("Failed to move units:", err)
+				continue
+			}
+			pubsub.PublishJSON(ch, routing.ExchangePerilTopic, routing.ArmyMovesKey, move)
+
+			fmt.Println("Move was successfully published to other")
+			fmt.Printf("Moved units: %+v\n", move)
 		} else if command == "status" {
 			gameState.CommandStatus()
 		} else if command == "help" {
@@ -65,7 +102,7 @@ func main() {
 		}
 	}
 
-	fmt.Println("Declared and bound queue:", queue.Name)
+	// fmt.Println("Declared and bound queue:", queue.Name)
 	defer ch.Close()
 	defer conn.Close()
 	signalChan := make(chan os.Signal, 1)

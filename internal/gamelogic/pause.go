@@ -8,7 +8,7 @@ import (
 
 func (gs *GameState) HandlePause(ps routing.PlayingState) {
 	defer fmt.Println("------------------------")
-	fmt.Println()
+	fmt.Printf("Playing State: %+v\n", ps)
 	if ps.IsPaused {
 		fmt.Println("==== Pause Detected ====")
 		gs.pauseGame()
