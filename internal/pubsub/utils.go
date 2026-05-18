@@ -9,6 +9,13 @@ import (
 )
 
 type SimpleQueueType string
+type AckType string
+
+const (
+	ACK         AckType = "ACK"
+	NACKRequeue AckType = "NACKREQUEUE"
+	NACKDiscard AckType = "NACKDISCARD"
+)
 
 const (
 	SimpleQueueTypeDurable   SimpleQueueType = "durable"
@@ -38,13 +45,16 @@ func DeclareAndBind(
 	if err != nil {
 		return nil, amqp.Queue{}, fmt.Errorf("failed to open a channel: %w", err)
 	}
+	args := amqp.Table{
+		"x-dead-letter-exchange": "peril_dlx",
+	}
 	queue, err := ch.QueueDeclare(
 		queueName,
 		queueType == SimpleQueueTypeDurable,
 		queueType == SimpleQueueTypeTransient,
 		queueType == SimpleQueueTypeTransient,
 		false,
-		nil,
+		args,
 	)
 	if err != nil {
 		return nil, amqp.Queue{}, err
@@ -69,7 +79,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T),
+	handler func(T) AckType,
 ) error {
 	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -86,8 +96,19 @@ func SubscribeJSON[T any](
 			if err != nil {
 				continue
 			}
-			handler(t)
-			msg.Ack(false)
+			switch handler(t) {
+			case ACK:
+				msg.Ack(false)
+				fmt.Println("msg successfully ack")
+			case NACKDiscard:
+				msg.Nack(false, false)
+				fmt.Println("msg successfully nackdiscard")
+			case NACKRequeue:
+				msg.Nack(false, true)
+				fmt.Println("msg successfully nackrequeue")
+
+			}
+
 		}
 	}()
 	return nil
