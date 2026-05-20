@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
+	"time"
 
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
@@ -50,18 +52,37 @@ func handlerArmyMove(gs *gamelogic.GameState, ch *amqp.Channel, username string)
 
 }
 
-func handleWar(gs *gamelogic.GameState) func(dw gamelogic.RecognitionOfWar) pubsub.AckType {
+func handleWar(gs *gamelogic.GameState, ch *amqp.Channel, username string) func(dw gamelogic.RecognitionOfWar) pubsub.AckType {
 	return func(dw gamelogic.RecognitionOfWar) pubsub.AckType {
 		defer fmt.Print("> ")
-		warOutcome, _, _ := gs.HandleWar(dw)
+		warOutcome, winner, loser := gs.HandleWar(dw)
 		switch warOutcome {
 		case gamelogic.WarOutcomeNotInvolved:
 			return pubsub.NACKRequeue
 		case gamelogic.WarOutcomeNoUnits:
 			return pubsub.NACKDiscard
-		case gamelogic.WarOutcomeYouWon, gamelogic.WarOutcomeOpponentWon, gamelogic.WarOutcomeDraw:
+		case gamelogic.WarOutcomeYouWon, gamelogic.WarOutcomeOpponentWon:
+			err := pubsub.PublishGob(ch, routing.ExchangePerilTopic, routing.GameLogSlug+"."+username, routing.GameLog{
+				CurrentTime: time.Now(),
+				Username:    username,
+				Message:     fmt.Sprintf("%s won a war against %s", winner, loser),
+			})
+			if err != nil {
+				return pubsub.NACKRequeue
+			}
+			return pubsub.ACK
+		case gamelogic.WarOutcomeDraw:
+			err := pubsub.PublishGob(ch, routing.ExchangePerilTopic, routing.GameLogSlug+"."+username, routing.GameLog{
+				CurrentTime: time.Now(),
+				Username:    username,
+				Message:     fmt.Sprintf("A war between %s and %s resulted in a draw", winner, loser),
+			})
+			if err != nil {
+				return pubsub.NACKRequeue
+			}
 			return pubsub.ACK
 		}
+
 		fmt.Println("War outcome unknown")
 		return pubsub.NACKDiscard
 	}
@@ -96,7 +117,7 @@ func main() {
 		fmt.Println("Failed to subscribe to queue:", err)
 		return
 	}
-	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, routing.WarRecognitionsPrefix, routing.WarRecognitionsPrefix+".*", pubsub.SimpleQueueTypeDurable, handleWar(gameState))
+	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, routing.WarRecognitionsPrefix, routing.WarRecognitionsPrefix+".*", pubsub.SimpleQueueTypeDurable, handleWar(gameState, ch, username))
 	if err != nil {
 		fmt.Println("Failed to subscribe to queue:", err)
 		return
@@ -135,7 +156,25 @@ func main() {
 			fmt.Println("Goodbye!")
 			break
 		} else if command == "spam" {
-			fmt.Println("Spamming not allowed yet!")
+			num, err := strconv.Atoi(words[1])
+			if err != nil {
+				fmt.Println("Invalid number of spam:", err)
+				continue
+			}
+			for i := 0; i < num; i++ {
+				log := gamelogic.GetMaliciousLog()
+				err := pubsub.PublishGob(ch, routing.ExchangePerilTopic, routing.GameLogSlug+"."+username, routing.GameLog{
+					CurrentTime: time.Now(),
+					Username:    username,
+					Message:     log,
+				})
+				if err != nil {
+					fmt.Println("Failed to publish malicious log:", err)
+					continue
+				}
+				fmt.Println("Published malicious log:", log)
+			}
+			fmt.Println("Spamming malicious logs...")
 		} else {
 			fmt.Println("Invalid command. goodbye")
 			continue

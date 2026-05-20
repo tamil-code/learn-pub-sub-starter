@@ -1,7 +1,9 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 
@@ -30,6 +32,19 @@ func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
 	return ch.PublishWithContext(context.Background(), exchange, key, false, false, amqp.Publishing{
 		ContentType: "application/json",
 		Body:        json,
+	})
+}
+
+func PublishGob[T any](ch *amqp.Channel, exchange, key string, val T) error {
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	err := encoder.Encode(val)
+	if err != nil {
+		return err
+	}
+	return ch.PublishWithContext(context.Background(), exchange, key, false, false, amqp.Publishing{
+		ContentType: "application/gob",
+		Body:        buf.Bytes(),
 	})
 }
 
@@ -106,6 +121,54 @@ func SubscribeJSON[T any](
 			case NACKRequeue:
 				msg.Nack(false, true)
 				fmt.Println("msg successfully nackrequeue")
+
+			}
+
+		}
+	}()
+	return nil
+}
+
+func SubscribeGob[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+) error {
+	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
+	if err != nil {
+		return err
+	}
+	err = ch.Qos(20, 0, false)
+	if err != nil {
+		return err
+	}
+	msgs, err := ch.Consume(queue.Name, "", false, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+	go func() {
+		for msg := range msgs {
+			var t T
+			decoder := gob.NewDecoder(bytes.NewReader(msg.Body))
+			err := decoder.Decode(&t)
+			if err != nil {
+				msg.Nack(false, false)
+				fmt.Println("[SubscribeGob] error decoding message:", err)
+				continue
+			}
+			switch handler(t) {
+			case ACK:
+				msg.Ack(false)
+				fmt.Println("[SubscribeGob] msg successfully ack")
+			case NACKDiscard:
+				msg.Nack(false, false)
+				fmt.Println("[SubscribeGob] msg successfully nackdiscard")
+			case NACKRequeue:
+				msg.Nack(false, true)
+				fmt.Println("[SubscribeGob] msg successfully nackrequeue")
 
 			}
 

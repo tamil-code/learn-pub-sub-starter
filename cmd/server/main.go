@@ -13,6 +13,17 @@ import (
 
 const RABBITMQ_URL = "amqp://guest:guest@localhost:5672/"
 
+func handleWriteLog() func(gs routing.GameLog) pubsub.AckType {
+	return func(gs routing.GameLog) pubsub.AckType {
+		err := gamelogic.WriteLog(gs)
+		if err != nil {
+			fmt.Println("Failed to write log:", err)
+			return pubsub.NACKRequeue
+		}
+		fmt.Print("Successfully written gamelog")
+		return pubsub.ACK
+	}
+}
 func main() {
 	fmt.Println("Starting Peril server...")
 	conn, err := amqp.Dial(RABBITMQ_URL)
@@ -35,13 +46,17 @@ func main() {
 	}
 
 	fmt.Println("Declared and bound queue:", queue.Name)
-
+	err = pubsub.SubscribeGob(conn, routing.ExchangePerilTopic, routing.GameLogSlug, "game_logs.*", pubsub.SimpleQueueTypeDurable, handleWriteLog())
+	if err != nil {
+		fmt.Println("Failed to subscribe gob gamelog queue:", err)
+		return
+	}
 	for {
 		gamelogic.PrintServerHelp()
 		words := gamelogic.GetInput()
 		if len(words) == 0 {
 			fmt.Println("You must enter a command. goodbye")
-			return
+			continue
 		}
 		command := words[0]
 
